@@ -159,7 +159,8 @@ def fig_ablation(rows, host):
 
 def fig_size_sweep(rows, host):
     grouped = pick(rows, "full", parallel="1")
-    ds_px = {"d640": 640 * 480, "d1080": 1920 * 1080, "d4k": 3840 * 2160}
+    ds_px = {"d640": 640 * 480, "d1080": 1920 * 1080, "d4k": 3840 * 2160,
+             "dsmall": 320 * 240}
     fig, ax = plt.subplots(figsize=(7, 4))
     for t in [t for t in ORDER if t in grouped]:
         pts = []

@@ -40,6 +40,7 @@ DATASETS = {
     "d640": ("640x480", 40),
     "d1080": ("1920x1080", 12),
     "d4k": ("3840x2160", 6),
+    "dsmall": ("320x240", 2000),
 }
 
 BIN_NATIVE = os.path.join(ROOT, "target/release/imgpipe")
@@ -74,18 +75,20 @@ def gen_datasets(names):
         )
 
 
-def build_cmd(target: str, mode: str, dataset: str, outdir: str):
-    """Return (argv, stdin_note). Paths are translated per target."""
-    host_in = dataset_dir(dataset)
+def build_cmd(target: str, mode: str, dataset: str, outdir: str, host_in: str = None):
+    """Return argv. `dataset` names a dir under dataset/; image-based targets
+    (docker/ctr) use the copy baked into the image at /data/<dataset>.
+    `host_in` overrides the input dir for host-path targets (parallel shards)."""
+    in_dir = host_in or dataset_dir(dataset)
     if target == "native":
-        return [BIN_NATIVE, "--mode", mode, "--in", host_in, "--out", outdir]
+        return [BIN_NATIVE, "--mode", mode, "--in", in_dir, "--out", outdir]
     if target == "musl":
-        return [BIN_MUSL, "--mode", mode, "--in", host_in, "--out", outdir]
+        return [BIN_MUSL, "--mode", mode, "--in", in_dir, "--out", outdir]
     if target == "wasmtime":
         os.makedirs(outdir, exist_ok=True)
         return [
             WASMTIME, "run",
-            f"--dir={host_in}::/data/in",
+            f"--dir={in_dir}::/data/in",
             f"--dir={outdir}::/data/out",
             BIN_WASM, "--",
             "--mode", mode, "--in", "/data/in", "--out", "/data/out",
@@ -181,7 +184,7 @@ def run_matrix(args):
                         outdir = os.path.join(outbase, f"{target}-{mode}")
                         argv = build_cmd(target, mode, dataset, outdir)
                         if par > 1:
-                            row = run_parallel(target, argv, par, dataset)
+                            row = run_parallel(target, mode, dataset, par)
                         else:
                             maybe_drop_caches(args.drop_caches and mode == "noop")
                             ok, wall, ru_kb, payload, tail = spawn_collect(argv)
@@ -210,60 +213,47 @@ def run_matrix(args):
     print(f"\nwrote {n_rows} rows -> {csv_path}")
 
 
-def run_parallel(target, argv, par, dataset):
-    """Run `par` instances of argv concurrently on hardlinked dataset shards;
-    report aggregate throughput from external wall time."""
+def run_parallel(target, mode, dataset, par):
+    """Run `par` instances concurrently and report aggregate throughput from
+    external wall time. Host-path targets get hardlinked input shards; image
+    targets (docker/ctr) share the read-only in-image dataset."""
+    import shutil
     shard_root = tempfile.mkdtemp(prefix=f"imgpipe-par{par}-")
-    base_in = dataset_dir(dataset)
-    shards = []
+    host_path_target = target in ("native", "musl", "wasmtime")
+    cmds = []
     for i in range(par):
-        sin = os.path.join(shard_root, f"in{i}")
-        os.makedirs(sin)
-        for f in os.listdir(base_in):
-            if f.endswith(".jpg"):
-                src = os.path.join(base_in, f)
-                try:
-                    os.link(src, os.path.join(sin, f))
-                except OSError:
-                    import shutil
-                    shutil.copy(src, os.path.join(sin, f))
-        # re-point the input path in argv (host paths only; for docker/ctr the
-        # image already contains the dataset, so shards are only used for the
-        # host-path targets — for image targets par instances share the image)
-        a = list(argv)
-        if target in ("native", "musl", "wasmtime"):
-            for j, tok in enumerate(a):
-                if tok == base_in or tok.endswith(f"{dataset}::/data/in"):
-                    if "::" in tok:
-                        a[j] = f"{sin}::/data/in"
-                    else:
-                        a[j] = sin
-                elif tok == "--out" or (j > 0 and a[j - 1] == "--out"):
-                    pass
-            if target == "wasmtime":
-                sout = os.path.join(shard_root, f"out{i}")
-                os.makedirs(sout, exist_ok=True)
-                a = [f"--dir={sout}::/data/out" if t.startswith("--dir=") and "/data/out" in t else t for t in a]
-        shards.append(a)
+        if host_path_target:
+            sin = os.path.join(shard_root, f"in{i}")
+            sout = os.path.join(shard_root, f"out{i}")
+            os.makedirs(sin)
+            os.makedirs(sout, exist_ok=True)
+            for f in os.listdir(dataset_dir(dataset)):
+                if f.endswith(".jpg"):
+                    src = os.path.join(dataset_dir(dataset), f)
+                    try:
+                        os.link(src, os.path.join(sin, f))
+                    except OSError:
+                        shutil.copy(src, os.path.join(sin, f))
+            cmds.append(build_cmd(target, mode, dataset, sout, host_in=sin))
+        else:
+            cmds.append(build_cmd(target, mode, dataset, "/data/out"))
 
     t0 = time.monotonic()
     procs = [subprocess.Popen(a, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-             for a in shards]
+             for a in cmds]
     rc = [p.wait() for p in procs]
     wall_ms = (time.monotonic() - t0) * 1000.0
-    size, count = DATASETS[dataset]
+    shutil.rmtree(shard_root, ignore_errors=True)
+    _, count = DATASETS[dataset]
     total = count * par
-    row = {
-        "mode": "full",
+    if any(c != 0 for c in rc):
+        print(f"[warn] parallel run had failures: {rc}", file=sys.stderr)
+    return {
+        "mode": mode,
         "n": total,
         "wall_ms": f"{wall_ms:.3f}",
         "imgs_per_s": f"{total / (wall_ms / 1000.0):.3f}",
     }
-    if any(c != 0 for c in rc):
-        print(f"[warn] parallel run had failures: {rc}", file=sys.stderr)
-    import shutil
-    shutil.rmtree(shard_root, ignore_errors=True)
-    return row
 
 
 def main():
@@ -280,10 +270,10 @@ def main():
     r.add_argument("--parallel", default="1")
     r.add_argument("--drop-caches", action="store_true")
     r.add_argument("--host-label", default=socket.gethostname())
-    args = r.parse_args() if len(sys.argv) > 1 and sys.argv[1] == "run" else None
+    args = ap.parse_args()
 
-    if sys.argv[1] == "gen":
-        gen_datasets(g.parse_args(sys.argv[2:]).datasets.split(","))
+    if args.cmd == "gen":
+        gen_datasets(args.datasets.split(","))
         return
 
     args.targets = args.targets.split(",")
