@@ -1,0 +1,14 @@
+[package]
+name = "imgpipe"
+version = "0.2.0"
+edition = "2021"
+description = "Edge image pipeline benchmark: JPEG decode -> Lanczos3 resize -> JPEG encode, for containerd vs runwasi(Wasm) vs Firecracker characterization"
+license = "MIT"
+
+[dependencies]
+image = { version = "0.25", default-features = false, features = ["jpeg"] }
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
