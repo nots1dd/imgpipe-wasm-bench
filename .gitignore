@@ -1,4 +1,5 @@
 /target
+/target-simd
 /tools
 /dataset
 /out

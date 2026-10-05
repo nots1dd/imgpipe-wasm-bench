@@ -15,6 +15,7 @@ Targets:
   native      host binary (target/release/imgpipe)
   musl        static musl binary (what ships in the container/rootfs)
   wasmtime    wasmtime CLI with WASI preopens (tools/wasmtime/wasmtime)
+  wasmtime-simd  same module built with -C target-feature=+simd128
   docker      `docker run --rm imgpipe:local` (dataset baked into image)
   ctr-ctr     `sudo ctr run` runc container (image: localhost/cc-imgpipe:local)
   ctr-wasm    `sudo ctr run --runtime io.containerd.wasmtime.v1` (localhost/cc-imgpipe-wasm:local)
@@ -46,6 +47,7 @@ DATASETS = {
 BIN_NATIVE = os.path.join(ROOT, "target/release/imgpipe")
 BIN_MUSL = os.path.join(ROOT, "target/x86_64-unknown-linux-musl/release/imgpipe")
 BIN_WASM = os.path.join(ROOT, "target/wasm32-wasip1/release/imgpipe.wasm")
+BIN_WASM_SIMD = os.path.join(ROOT, "target-simd/wasm32-wasip1/release/imgpipe.wasm")
 WASMTIME = os.environ.get(
     "WASMTIME_BIN", os.path.join(ROOT, "tools/wasmtime/wasmtime")
 )
@@ -84,13 +86,14 @@ def build_cmd(target: str, mode: str, dataset: str, outdir: str, host_in: str = 
         return [BIN_NATIVE, "--mode", mode, "--in", in_dir, "--out", outdir]
     if target == "musl":
         return [BIN_MUSL, "--mode", mode, "--in", in_dir, "--out", outdir]
-    if target == "wasmtime":
+    if target in ("wasmtime", "wasmtime-simd"):
         os.makedirs(outdir, exist_ok=True)
+        wasm = BIN_WASM if target == "wasmtime" else BIN_WASM_SIMD
         return [
             WASMTIME, "run",
             f"--dir={in_dir}::/data/in",
             f"--dir={outdir}::/data/out",
-            BIN_WASM, "--",
+            wasm, "--",
             "--mode", mode, "--in", "/data/in", "--out", "/data/out",
         ]
     if target == "docker":
@@ -219,7 +222,7 @@ def run_parallel(target, mode, dataset, par):
     targets (docker/ctr) share the read-only in-image dataset."""
     import shutil
     shard_root = tempfile.mkdtemp(prefix=f"imgpipe-par{par}-")
-    host_path_target = target in ("native", "musl", "wasmtime")
+    host_path_target = target in ("native", "musl", "wasmtime", "wasmtime-simd")
     cmds = []
     for i in range(par):
         if host_path_target:

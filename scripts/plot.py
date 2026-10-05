@@ -31,12 +31,13 @@ COLORS = {
     "docker": "#1f77b4",
     "ctr-ctr": "#17becf",
     "wasmtime": "#d62728",
+    "wasmtime-simd": "#9467bd",
     "ctr-wasm": "#ff7f0e",
     "wasmedge": "#e377c2",
     "firecracker": "#2ca02c",
 }
-ORDER = ["native", "musl", "docker", "ctr-ctr", "wasmtime", "ctr-wasm",
-         "wasmedge", "firecracker"]
+ORDER = ["native", "musl", "docker", "ctr-ctr", "wasmtime", "wasmtime-simd",
+         "ctr-wasm", "wasmedge", "firecracker"]
 
 
 def load_rows(host_filter=None):
