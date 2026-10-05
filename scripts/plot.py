@@ -89,7 +89,10 @@ def bar_labels(ax, bars, fmt="{:.1f}"):
 
 def fig_throughput(rows, host):
     grouped = pick(rows, "full", parallel="1")
-    datasets = sorted({r["dataset"] for r in rows if r["mode"] == "full"})
+    px = {"dsmall": 320 * 240, "d640": 640 * 480, "d1080": 1920 * 1080,
+          "d4k": 3840 * 2160}
+    datasets = sorted({r["dataset"] for r in rows if r["mode"] == "full"},
+                      key=lambda d: px.get(d, 0))
     targets = [t for t in ORDER if t in grouped]
     fig, ax = plt.subplots(figsize=(7, 4))
     width = 0.8 / max(len(targets), 1)
