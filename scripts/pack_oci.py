@@ -1,18 +1,22 @@
 #!/usr/bin/env python3
-"""Pack imgpipe artifacts as OCI image archives — no Docker/BuildKit required.
+"""Pack imgpipe/edgeserve artifacts as OCI image archives — no Docker needed.
 
-Produces a tar in OCI image layout that `sudo ctr images import` accepts on the
+Produces tars in OCI image layout that `sudo ctr images import` accepts on the
 GCP VM (the Review-1 testbed has containerd but no dockerd/buildkit).
 
-  python3 scripts/pack_oci.py container   # scratch + musl binary  -> imgpipe-container.tar
-  python3 scripts/pack_oci.py wasm        # scratch + wasm module  -> imgpipe-wasm.tar
+  python3 scripts/pack_oci.py container-musl    # scratch + musl statics
+  python3 scripts/pack_oci.py container-glibc   # scratch + crt-static gnu
+  python3 scripts/pack_oci.py wasm              # scratch + imgpipe.wasm (wasip1)
+  python3 scripts/pack_oci.py wasm-net          # scratch + edgeserve.wasm (wasip2)
 
 Import & run on the VM:
-  sudo ctr images import imgpipe-container.tar
-  sudo ctr run --rm localhost/cc-imgpipe:local t1 /imgpipe --mode full --in /data/d640 --out /data/out
-  sudo ctr images import imgpipe-wasm.tar
-  sudo ctr run --rm --runtime io.containerd.wasmtime.v1 --platform wasi/wasm \
-      localhost/cc-imgpipe-wasm:local t1 /imgpipe.wasm --mode full --in /data/d640 --out /data/out
+  sudo ctr images import imgpipe-container-musl.tar
+  sudo ctr run --rm localhost/cc-img-bench-musl:local t1 \
+      /imgpipe --mode full --in /data/d640 --out /data/out
+  sudo nerdctl run -d -p 8080:8080 --entrypoint /edgeserve \
+      localhost/cc-img-bench-glibc:local --port 8080 --data /data/d640
+  sudo nerdctl run -d --network host --runtime io.containerd.wasmtime.v1 \
+      localhost/cc-img-bench-wasm:local /edgeserve.wasm --port 8080 --data /data/d640
 """
 
 import argparse
@@ -63,24 +67,38 @@ def blob_store(tmp, digest_hex, data):
     return {"mediaType": None, "digest": f"sha256:{digest_hex}", "size": len(data)}
 
 
+KINDS = {
+    # (binaries [(src, arcname, mode)], entrypoint, os, arch, image ref)
+    "container-musl": (
+        "target/x86_64-unknown-linux-musl/release", ["imgpipe", "edgeserve"],
+        "/imgpipe", "linux", "amd64", "localhost/cc-img-bench-musl:local"),
+    "container-glibc": (
+        "target-gnu/x86_64-unknown-linux-gnu/release", ["imgpipe", "edgeserve"],
+        "/imgpipe", "linux", "amd64", "localhost/cc-img-bench-glibc:local"),
+    # wasip1 scalar module (Review-2 imgpipe pipeline)
+    "wasm": (
+        "target/wasm32-wasip1/release", ["imgpipe.wasm"],
+        "/imgpipe.wasm", None, "wasm", "localhost/cc-imgpipe-wasm:local"),
+    # wasip2 component with sockets (edgeserve HTTP service)
+    "wasm-net": (
+        "target/wasm32-wasip2/release", ["edgeserve.wasm"],
+        "/edgeserve.wasm", None, "wasm", "localhost/cc-img-bench-wasm:local"),
+}
+
+
 def pack(kind: str, datasets, out_path):
-    if kind == "container":
-        binary = os.path.join(ROOT, "target/x86_64-unknown-linux-musl/release/imgpipe")
-        entry, os_name, arch = "/imgpipe", "linux", "amd64"
-        ref = "localhost/cc-imgpipe:local"
-    else:
-        binary = os.path.join(ROOT, "target/wasm32-wasip1/release/imgpipe.wasm")
-        entry = "/imgpipe.wasm"
+    bindir, bins, entry, os_name, arch, ref = KINDS[kind]
+    if os_name is None:
         # runwasi historically accepts os/arch wasi/wasm; newer releases also
         # accept wasip1/wasm. Override with WASM_OCI_OS if your shim complains.
-        os_name, arch = os.environ.get("WASM_OCI_OS", "wasi"), "wasm"
-        ref = "localhost/cc-imgpipe-wasm:local"
+        os_name = os.environ.get("WASM_OCI_OS", "wasi")
 
-    if not os.path.exists(binary):
-        raise SystemExit(f"missing {binary} — build it first (see README)")
-
-    files = [(os.path.basename(entry), binary, 0o755), ("data", None, 0o755),
-             ("data/out", None, 0o755)]
+    files = [("data", None, 0o755), ("data/out", None, 0o755)]
+    for b in bins:
+        src = os.path.join(ROOT, bindir, b)
+        if not os.path.exists(src):
+            raise SystemExit(f"missing {src} — build it first (see README)")
+        files.append((b, src, 0o755))
     for ds in datasets:
         d = os.path.join(ROOT, "dataset", ds)
         if not os.path.isdir(d):
@@ -92,6 +110,8 @@ def pack(kind: str, datasets, out_path):
 
     layer_gz, diff_id = build_layer(files)
     tmp = os.path.join(ROOT, "out", f"oci-{kind}")
+    import shutil
+    shutil.rmtree(tmp, ignore_errors=True)   # drop stale blobs from prior runs
     os.makedirs(tmp, exist_ok=True)
 
     layer_desc = blob_store(tmp, sha256(layer_gz), layer_gz)
@@ -147,7 +167,7 @@ def config_time():
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("kind", choices=["container", "wasm"])
+    ap.add_argument("kind", choices=list(KINDS))
     ap.add_argument("--datasets", default="d640,d1080")
     ap.add_argument("--out", default=None)
     args = ap.parse_args()

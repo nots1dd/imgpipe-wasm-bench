@@ -100,8 +100,14 @@ def build_cmd(target: str, mode: str, dataset: str, outdir: str, host_in: str = 
         # dataset baked into the image under /data/<dataset>
         return ["docker", "run", "--rm", "imgpipe:local",
                 "--mode", mode, "--in", f"/data/{dataset}", "--out", "/data/out"]
-    if target == "ctr-ctr":
-        return ["sudo", "ctr", "run", "--rm", "localhost/cc-imgpipe:local",
+    if target in ("docker-musl", "docker-glibc"):
+        libc = target.split("-")[1]
+        return ["docker", "run", "--rm", "--entrypoint", "/imgpipe",
+                f"img-bench-{libc}:local",
+                "--mode", mode, "--in", f"/data/{dataset}", "--out", "/data/out"]
+    if target in ("ctr-ctr-musl", "ctr-ctr-glibc"):
+        libc = target.split("-")[2]
+        return ["sudo", "ctr", "run", "--rm", f"localhost/cc-img-bench-{libc}:local",
                 f"bench-{int(time.time()*1000)}",
                 "/imgpipe", "--mode", mode, "--in", f"/data/{dataset}", "--out", "/data/out"]
     if target in ("ctr-wasm", "wasmedge"):
@@ -118,7 +124,9 @@ def rss_source_for(target: str) -> str:
     # The binary self-reports VmHWM on Linux (native, musl, docker, ctr-ctr).
     # Under wasmtime there is no /proc in the sandbox, so we use the external
     # rusage of the wasmtime process (includes the runtime itself — honest).
-    return "self_vmhwm" if target in ("native", "musl", "docker", "ctr-ctr") else "child_rusage"
+    return "self_vmhwm" if target in ("native", "musl", "docker", "docker-musl",
+                                      "docker-glibc", "ctr-ctr", "ctr-ctr-musl",
+                                      "ctr-ctr-glibc") else "child_rusage"
 
 
 def spawn_collect(argv):

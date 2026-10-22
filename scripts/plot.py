@@ -29,20 +29,28 @@ COLORS = {
     "native": "#7f7f7f",
     "musl": "#9e9e9e",
     "docker": "#1f77b4",
+    "docker-musl": "#1f77b4",
+    "docker-glibc": "#17becf",
     "ctr-ctr": "#17becf",
+    "ctr-ctr-musl": "#1f77b4",
+    "ctr-ctr-glibc": "#17becf",
     "wasmtime": "#d62728",
     "wasmtime-simd": "#9467bd",
     "ctr-wasm": "#ff7f0e",
     "wasmedge": "#e377c2",
     "firecracker": "#2ca02c",
+    "firecracker-loopback": "#8c564b",
 }
-ORDER = ["native", "musl", "docker", "ctr-ctr", "wasmtime", "wasmtime-simd",
-         "ctr-wasm", "wasmedge", "firecracker"]
+ORDER = ["native", "musl", "docker", "docker-musl", "docker-glibc", "ctr-ctr",
+         "ctr-ctr-musl", "ctr-ctr-glibc", "wasmtime", "wasmtime-simd",
+         "ctr-wasm", "wasmedge", "firecracker", "firecracker-loopback"]
 
 
 def load_rows(host_filter=None):
     rows = []
-    for path in sorted(glob.glob(os.path.join(ROOT, "results", "*.csv"))):
+    for path in sorted(glob.glob(os.path.join(ROOT, "results", "results-*.csv"))):
+        if os.path.basename(path).startswith("results-net-"):
+            continue
         with open(path) as f:
             for r in csv.DictReader(f):
                 rows.append(r)
@@ -54,6 +62,16 @@ def load_rows(host_filter=None):
     if host_filter:
         rows = [r for r in rows if r["host"] == host_filter]
     return rows, host_filter or "?"
+
+
+def load_net_rows(host_filter=None):
+    rows = []
+    for path in sorted(glob.glob(os.path.join(ROOT, "results", "results-net-*.csv"))):
+        with open(path) as f:
+            rows.extend(csv.DictReader(f))
+    if host_filter:
+        rows = [r for r in rows if r["host"] == host_filter]
+    return rows
 
 
 def fnum(v):
@@ -256,6 +274,97 @@ def fig_concurrency(rows, host):
     plt.close(fig)
 
 
+def net_group(rows, endpoint):
+    out = defaultdict(list)
+    for r in rows:
+        if r["endpoint"] == endpoint:
+            out[r["target"]].append(r)
+    return out
+
+
+def fig_net_throughput(rows, host):
+    fig, axes = plt.subplots(1, 2, figsize=(11, 4.2), sharey=False)
+    for ax, ep in zip(axes, ["echo", "thumb"]):
+        grouped = net_group(rows, ep)
+        targets = [t for t in ORDER if t in grouped]
+        conns = sorted({int(r["conns"]) for rs in grouped.values() for r in rs})
+        width = 0.8 / max(len(targets), 1)
+        for i, t in enumerate(targets):
+            xs, vals = [], []
+            for j, c in enumerate(conns):
+                v = mean([fnum(r["req_per_s"]) for r in grouped[t]
+                          if int(r["conns"]) == c])
+                if v is not None:
+                    xs.append(j + i * width)
+                    vals.append(v)
+            ax.bar(xs, vals, width * 0.9, label=t, color=COLORS[t])
+        ax.set_xticks([j + 0.4 - width / 2 for j in range(len(conns))])
+        ax.set_xticklabels([str(c) for c in conns])
+        ax.set_xlabel("concurrent connections")
+        ax.set_title(f"/{ep}")
+        ax.set_yscale("log")
+    axes[0].set_ylabel("throughput (req/s, log)")
+    fig.suptitle(f"edgeserve: HTTP throughput by concurrency (host: {host})")
+    axes[1].legend(loc="best", fontsize=8)
+    fig.tight_layout()
+    fig.savefig(os.path.join(FIGS, "fig8_net_throughput.png"), dpi=150)
+    plt.close(fig)
+
+
+def fig_net_latency(rows, host):
+    fig, axes = plt.subplots(1, 2, figsize=(11, 4.2))
+    for ax, ep in zip(axes, ["echo", "thumb"]):
+        grouped = net_group(rows, ep)
+        for t in [t for t in ORDER if t in grouped]:
+            pts = []
+            conns = sorted({int(r["conns"]) for r in grouped[t]})
+            for c in conns:
+                v = mean([fnum(r["p99_ms"]) for r in grouped[t]
+                          if int(r["conns"]) == c])
+                if v is not None:
+                    pts.append((c, v))
+            if pts:
+                ax.plot([p[0] for p in pts], [p[1] for p in pts], "o-",
+                        label=t, color=COLORS[t])
+        ax.set_xlabel("concurrent connections")
+        ax.set_yscale("log")
+        ax.set_title(f"/{ep} p99")
+    axes[0].set_ylabel("p99 latency (ms, log)")
+    axes[1].legend(loc="best", fontsize=8)
+    fig.suptitle(f"edgeserve: tail latency under load (host: {host})")
+    fig.tight_layout()
+    fig.savefig(os.path.join(FIGS, "fig9_net_latency.png"), dpi=150)
+    plt.close(fig)
+
+
+def fig_libc(rows, host):
+    """musl vs glibc container on the imgpipe batch task (threat 2 closure)."""
+    sel = ["native", "docker-musl", "docker-glibc", "wasmtime", "wasmtime-simd"]
+    fig, axes = plt.subplots(1, 2, figsize=(10, 4.2))
+    # left: full-pipeline throughput d640
+    grouped = pick(rows, "full", dataset="d640")
+    targets = [t for t in sel if t in grouped]
+    vals = [mean([fnum(r["imgs_per_s"]) for r in grouped[t]]) or 0 for t in targets]
+    bars = axes[0].bar(targets, vals, color=[COLORS[t] for t in targets])
+    bar_labels(axes[0], bars)
+    axes[0].set_ylabel("throughput (images/s)")
+    axes[0].set_title("imgpipe full, d640")
+    axes[0].tick_params(axis="x", rotation=20)
+    # right: cold start
+    grouped = pick(rows, "noop", parallel=None)
+    targets = [t for t in sel if t in grouped]
+    vals = [mean([fnum(r["wall_ms"]) for r in grouped[t]]) or 0 for t in targets]
+    bars = axes[1].bar(targets, vals, color=[COLORS[t] for t in targets])
+    bar_labels(axes[1], bars, "{:.0f}")
+    axes[1].set_ylabel("cold start (ms)")
+    axes[1].set_title("noop cold start")
+    axes[1].tick_params(axis="x", rotation=20)
+    fig.suptitle(f"libc ablation: musl vs glibc container (host: {host})")
+    fig.tight_layout()
+    fig.savefig(os.path.join(FIGS, "fig10_libc.png"), dpi=150)
+    plt.close(fig)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--host", default=None)
@@ -271,6 +380,11 @@ def main():
     fig_coldstart(rows, host)
     fig_rss(rows, host)
     fig_concurrency(rows, host)
+    fig_libc(rows, host)
+    net = load_net_rows(host)
+    if net:
+        fig_net_throughput(net, host)
+        fig_net_latency(net, host)
     print(f"figures written to {FIGS} (host filter: {host})")
 
 
