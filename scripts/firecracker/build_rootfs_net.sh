@@ -45,6 +45,10 @@ echo "=== echo c8 ==="
 /edgegun --host 127.0.0.1 --port 8080 --path /echo?n=1024 --conns 8 --reqs 3000
 echo "=== thumb c8 ==="
 /edgegun --host 127.0.0.1 --port 8080 --path /thumb?id=7 --conns 8 --reqs 100
+echo "=== telemetry c32 ==="
+/edgegun --host 127.0.0.1 --port 8080 --path /echo?n=64 --conns 32 --reqs 10 --think 25
+echo "=== telemetry c128 ==="
+/edgegun --host 127.0.0.1 --port 8080 --path /echo?n=64 --conns 128 --reqs 10 --think 25
 echo "FC-DONE"
 poweroff -f
 INIT

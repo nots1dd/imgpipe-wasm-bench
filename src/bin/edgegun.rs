@@ -55,7 +55,8 @@ fn read_response(s: &mut TcpStream, buf: &mut Vec<u8>) -> std::io::Result<usize>
     Ok(clen)
 }
 
-fn worker(host: &str, port: u16, path: &str, reqs: usize, close: bool) -> (Vec<f64>, usize, usize) {
+fn worker(host: &str, port: u16, path: &str, reqs: usize, close: bool,
+          think_ms: u64) -> (Vec<f64>, usize, usize) {
     let mut lat = Vec::with_capacity(reqs);
     let mut errors = 0usize;
     let mut bytes = 0usize;
@@ -93,6 +94,9 @@ fn worker(host: &str, port: u16, path: &str, reqs: usize, close: bool) -> (Vec<f
     let _ = s.set_write_timeout(Some(Duration::from_secs(30)));
     let mut buf = Vec::with_capacity(128 * 1024);
     for _ in 0..reqs {
+        if think_ms > 0 {
+            std::thread::sleep(Duration::from_millis(think_ms));
+        }
         let t0 = Instant::now();
         let ok = s
             .write_all(req.as_bytes())
@@ -123,12 +127,15 @@ fn main() {
         .and_then(|v| v.parse().ok())
         .unwrap_or(1000);
     let close = args.iter().any(|a| a == "--close");
+    let think_ms: u64 = argval(&args, "--think")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0);
 
     let t0 = Instant::now();
     let handles: Vec<_> = (0..conns)
         .map(|_| {
             let (h, pth) = (host.clone(), path.clone());
-            std::thread::spawn(move || worker(&h, port, &pth, reqs, close))
+            std::thread::spawn(move || worker(&h, port, &pth, reqs, close, think_ms))
         })
         .collect();
     let mut lat = Vec::new();

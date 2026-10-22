@@ -36,7 +36,8 @@ CSV_FIELDS = ["ts", "host", "target", "endpoint", "conns", "rep", "req_per_s",
               "p50_ms", "p95_ms", "p99_ms", "requests", "errors",
               "cold_ms", "rss_kb"]
 
-ENDPOINT_REQS = {"echo": ("/echo?n=1024", 3000), "thumb": ("/thumb?id=7", 100)}
+ENDPOINT_REQS = {"echo": ("/echo?n=1024", 3000), "thumb": ("/thumb?id=7", 100),
+                 "telemetry": ("/echo?n=64", 10)}
 
 
 def stage_docker_bins():
@@ -148,6 +149,8 @@ def main():
     r.add_argument("--endpoints", default="echo,thumb")
     r.add_argument("--conns", default="1,8,32")
     r.add_argument("--reps", type=int, default=3)
+    r.add_argument("--think", type=int, default=0,
+                   help="ms between requests per connection (telemetry model)")
     r.add_argument("--host-label", default=socket.gethostname())
     r.add_argument("--base-port", type=int, default=18080)
     args = ap.parse_args()
@@ -179,10 +182,12 @@ def main():
             path, reqs = ENDPOINT_REQS[ep]
             for conns in conns_list:
                 for rep in range(args.reps):
-                    out = subprocess.run(
-                        [edgegun, "--host", "127.0.0.1", "--port", str(port),
-                         "--path", path, "--conns", str(conns), "--reqs", str(reqs)],
-                        capture_output=True, text=True, timeout=300)
+                    cmd = [edgegun, "--host", "127.0.0.1", "--port", str(port),
+                           "--path", path, "--conns", str(conns), "--reqs", str(reqs)]
+                    if args.think > 0:
+                        cmd += ["--think", str(args.think)]
+                    out = subprocess.run(cmd, capture_output=True, text=True,
+                                         timeout=900)
                     try:
                         payload = json.loads(out.stdout.strip().splitlines()[-1])
                     except Exception:
@@ -192,7 +197,7 @@ def main():
                     row = {"ts": int(time.time()), "host": args.host_label,
                            "target": target, "endpoint": ep, "conns": conns,
                            "rep": rep, "cold_ms": f"{cold:.1f}",
-                           "rss_kb": rss or ""}
+                           "rss_kb": server_rss_kb(target, proc, cname) or ""}
                     for k in ("req_per_s", "p50_ms", "p95_ms", "p99_ms",
                               "requests", "errors"):
                         row[k] = payload.get(k, "")

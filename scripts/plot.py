@@ -365,6 +365,39 @@ def fig_libc(rows, host):
     plt.close(fig)
 
 
+def fig_telemetry(rows, host):
+    """High-concurrency telemetry fan-in: throughput and failure rate."""
+    grouped = net_group(rows, "telemetry")
+    if not grouped:
+        return
+    targets = [t for t in ORDER if t in grouped]
+    conns = sorted({int(r["conns"]) for rs in grouped.values() for r in rs})
+    fig, axes = plt.subplots(1, 2, figsize=(11, 4.2))
+    for t in targets:
+        rps, errs = [], []
+        for c in conns:
+            sel = [r for r in grouped[t] if int(r["conns"]) == c]
+            rps.append(mean([fnum(r["req_per_s"]) for r in sel]))
+            tot = sum(fnum(r["requests"]) or 0 for r in sel) + \
+                  sum(fnum(r["errors"]) or 0 for r in sel)
+            errs.append(100.0 * sum(fnum(r["errors"]) or 0 for r in sel) / tot
+                        if tot else 0.0)
+        axes[0].plot(conns, [v or 0 for v in rps], "o-", label=t, color=COLORS[t])
+        axes[1].plot(conns, errs, "o-", label=t, color=COLORS[t])
+    axes[0].set_xlabel("concurrent sensor connections")
+    axes[0].set_ylabel("aggregate throughput (req/s)")
+    axes[0].set_yscale("log")
+    axes[0].set_title("telemetry fan-in: throughput")
+    axes[1].set_xlabel("concurrent sensor connections")
+    axes[1].set_ylabel("failed requests (%)")
+    axes[1].set_title("telemetry fan-in: failures (30 s timeout)")
+    axes[1].legend(loc="best", fontsize=8)
+    fig.suptitle(f"Edge telemetry fan-in, 25 ms report interval (host: {host})")
+    fig.tight_layout()
+    fig.savefig(os.path.join(FIGS, "fig11_telemetry.png"), dpi=150)
+    plt.close(fig)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--host", default=None)
@@ -385,6 +418,7 @@ def main():
     if net:
         fig_net_throughput(net, host)
         fig_net_latency(net, host)
+        fig_telemetry(net, host)
     print(f"figures written to {FIGS} (host filter: {host})")
 
 
